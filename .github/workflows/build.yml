@@ -1,0 +1,79 @@
+name: Build La Isla de los Dragoncitos
+
+# Sube el .zip del mod tal cual a la raiz del repositorio (sin descomprimir).
+# El workflow lo abre, compila y deja el .jar en Actions -> (ejecucion) -> Artifacts.
+# Tambien funciona si subes el proyecto ya descomprimido.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descomprimir el zip del mod
+        run: |
+          python3 - <<'PY'
+          import glob, os, shutil, zipfile
+          zips = sorted(glob.glob('*.zip'), key=os.path.getmtime, reverse=True)
+          shutil.rmtree('mod_build', ignore_errors=True)
+          os.makedirs('mod_build', exist_ok=True)
+          if zips:
+              print('Usando', zips[0])
+              with zipfile.ZipFile(zips[0]) as z:
+                  for info in z.infolist():
+                      name = info.filename.replace('\\', '/')
+                      if name.endswith('/'):
+                          continue
+                      target = os.path.join('mod_build', name)
+                      os.makedirs(os.path.dirname(target), exist_ok=True)
+                      with open(target, 'wb') as out:
+                          out.write(z.read(info))
+          else:
+              print('No hay zip: se compila el repositorio tal cual')
+              for item in os.listdir('.'):
+                  if item not in ('mod_build', '.git', '.github'):
+                      dest = os.path.join('mod_build', item)
+                      (shutil.copytree if os.path.isdir(item) else shutil.copy2)(item, dest)
+          roots = [os.path.dirname(p) for p in glob.glob('mod_build/**/build.gradle', recursive=True)]
+          root = sorted(roots, key=len)[0] if roots else 'mod_build'
+          print('Raiz del proyecto:', root)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('MOD_ROOT=' + root + '\n')
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle 8.1.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.1.1'
+
+      - name: Build with Gradle
+        working-directory: ${{ env.MOD_ROOT }}
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Comprobar que el jar tiene clases
+        run: |
+          set -e
+          ls "$MOD_ROOT"/build/libs/*.jar
+          for jar in "$MOD_ROOT"/build/libs/*.jar; do
+            n=$(unzip -l "$jar" | grep -c '\.class' || true)
+            echo "$jar -> $n clases"
+            [ "$n" -gt 0 ]
+          done
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mod-JAR
+          path: ${{ env.MOD_ROOT }}/build/libs/*.jar
+          if-no-files-found: error
